@@ -52,7 +52,7 @@ def main():
         device = torch.device("cpu")
 
     # Create N (num_envs) vectorised environments
-    envs = gym.vector.SyncVectorEnv([lambda: make_env(args.env_id, args.seed + i, i, args.record_video, run_name) for i in range(args.num_envs)])
+    envs = gym.vector.SyncVectorEnv([lambda i = i: make_env(args.env_id, args.seed + i, i, args.record_video, run_name) for i in range(args.num_envs)])
     seeds = []
     for i in range(args.num_envs):
         seeds.append(args.seed + i) 
@@ -317,7 +317,9 @@ def make_env(env_id, seed, env_num, record_video, run_name):
     # Make environment, and record video for first environment, if requested
     if record_video and env_num == 0:
         env = gym.make(env_id, render_mode="rgb_array")
-        env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+        trigger = lambda t: t % 50 == 0
+        env = gym.wrappers.RecordVideo(env, f"./videos/{run_name}", episode_trigger = trigger)
+        print(f"Recording video for environment {env_num}")
     else:
         env = gym.make(env_id)
     
