@@ -1,6 +1,6 @@
 # atari-ppo-from-scratch
 
-Implementation of the PPO (Proximal Policy Optimization) algorithm from scratch to learn to play Atari games. Follows tutorial from https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/ 🕹️
+Implementation of the PPO (Proximal Policy Optimization) algorithm from scratch to learn to play Atari games. Follows the tutorial from https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/ 🕹️
 
 ## Description
 
