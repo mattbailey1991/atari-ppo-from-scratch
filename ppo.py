@@ -12,7 +12,8 @@ import random
 import numpy as np
 
 # Gym
-import gym
+import gymnasium as gym
+import ale_py
 
 # PyTorch 
 import torch
@@ -20,6 +21,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+
+# Atari wrappers
+from stable_baselines3.common.atari_wrappers import ClipRewardEnv, EpisodicLifeEnv, FireResetEnv, MaxAndSkipEnv, NoopResetEnv
 
 
 def main():
@@ -49,6 +53,9 @@ def main():
 
     # Create N (num_envs) vectorised environments
     envs = gym.vector.SyncVectorEnv([lambda: make_env(args.env_id, args.seed + i, i, args.record_video, run_name) for i in range(args.num_envs)])
+    seeds = []
+    for i in range(args.num_envs):
+        seeds.append(args.seed + i) 
 
     # Create agent
     agent = Agent(envs).to(device)
@@ -71,7 +78,8 @@ def main():
     norm_advantages = args.norm_advantages
     gae_lambda = args.gae_lambda
     update_count = int(args.total_timesteps // batch_size)
-    next_state = torch.Tensor(envs.reset()).float().to(device)
+    next_state, _ = envs.reset(seed=seeds)
+    next_state= torch.Tensor(next_state).float().to(device)
     done = torch.zeros(n).to(device)
 
 ##############################################
@@ -95,7 +103,7 @@ def main():
             with torch.no_grad():
                 action, log_prob, _ = agent.act(state)
                 value = agent.v(state)
-            next_state, reward, done, info = envs.step(action.cpu().numpy())
+            next_state, reward, done, _, info = envs.step(action.cpu().numpy())
 
             # Convert np.ndarray returned by env.step() to Tensor
             next_state = torch.Tensor(next_state).float().to(device)
@@ -110,14 +118,15 @@ def main():
 
             cum_steps_trained += n
             
-            # Log returns and episode lengths into tensorboard
-            for item in info:
-                if "episode" in item.keys():
-                    print(f"cumulative_steps_trained={cum_steps_trained}, episodic_return={item['episode']['r']}")
-                    writer.add_scalar("charts/episodic_return", item["episode"]["r"], cum_steps_trained)
-                    writer.add_scalar("charts/episodic_length", item["episode"]["l"], cum_steps_trained)
-                    break
-        
+            # Log returns and episode lengths into tensorboard)
+            if "final_info" in info:
+                for info in info["final_info"]:
+                    if info and "episode" in info:
+                        print(f"global_step={cum_steps_trained}, episodic_return={info['episode']['r']}")
+                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], cum_steps_trained)
+                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], cum_steps_trained)
+                        break
+
         # Calculate advantages and returns using:
         # a(t) = r(t) + gamma*v(t+1) - v(t), using v() from critic network
         # ret(t) = sum(r(t) + gamma * r(t+1) + .... gamma^k * r(t+k))
@@ -149,7 +158,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     # Environment variables
     parser.add_argument('--exp-name', type = str, default = os.path.basename(__file__).rstrip(".py"), help = "The experiment name")
-    parser.add_argument('--env-id', type = str, default = "LunarLander-v2", help = "The gym environment to be trained")
+    parser.add_argument('--env-id', type = str, default = "BreakoutNoFrameskip-v4", help = "The gym environment to be trained")
     parser.add_argument('--seed', type = int, default = 1, help = "Sets random, numpy, torch seed")
     
     # Device variables
@@ -160,14 +169,14 @@ def parse_args():
     parser.add_argument('--record-video', type=lambda x: bool(strtobool(x)), default=False, nargs='?', const=True, help="Saves videos of the agent performance to the videos folder")
 
     # Training variables
-    parser.add_argument('--total-timesteps', type = int, default = 25000, help = "Total timesteps of the experiment")
-    parser.add_argument('--num-envs', type=int, default=4, help="The number of vectorised environments")
-    parser.add_argument('--rollout-steps', type=int, default=500, help="The number of steps per rollout per environment")
+    parser.add_argument('--total-timesteps', type = int, default = 10000000, help = "Total timesteps of the experiment")
+    parser.add_argument('--num-envs', type=int, default=8, help="The number of vectorised environments")
+    parser.add_argument('--rollout-steps', type=int, default=128, help="The number of steps per rollout per environment")
     parser.add_argument('--epochs', type=int, default=4, help="The number of epochs to train in each update")
     parser.add_argument('--minibatches', type=int, default=4, help="The number of minibatches")
     parser.add_argument('--lr', type = float, default = 2.5e-4, help = "Learning rate of the optimiser")
     parser.add_argument('--gamma', type=float, default=0.995, help="The discount rate for returns")
-    parser.add_argument('--clip-param', type=float, default=0.2, help="The clip coefficient for the clipped surrogate objective function")
+    parser.add_argument('--clip-param', type=float, default=0.1, help="The clip coefficient for the clipped surrogate objective function")
     parser.add_argument('--weight-decay', type=float, default=1e-4, help="The weight decay / L2 regularisation for the adam optimiser")
     parser.add_argument("--ent-coef", type=float, default=0.01, help="coefficient of the entropy loss")
     parser.add_argument("--vl-coef", type=float, default=0.5, help="coefficient of the value loss")
@@ -188,25 +197,30 @@ class Agent(nn.Module):
         super(Agent, self).__init__()
         # Shared feature network
         self.hidden = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
-            nn.Tanh(),
+            layer_init(nn.Conv2d(4, 32, 8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+            layer_init(nn.Linear(64 * 7 * 7, 512)),
+            nn.ReLU(),
         )
         
         # Actor network
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(64, envs.single_action_space.n), std=0.01),
+            layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01),
             nn.Softmax(dim=-1)
         )
 
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(64, 1), std=1.0)
+            layer_init(nn.Linear(512, 1), std=1.0)
         )
 
     def v(self, x):
         """Returns the estimated value of state x according to the critic network"""
-        x = x.float()
+        x = x.float() / 255.0
         return self.critic(self.hidden(x))
     
 
@@ -215,7 +229,7 @@ class Agent(nn.Module):
         action selected at random from the probability distribution produced by the actor network,
         the log_prob of action,
         the entropy of the action probability distribution"""
-        x = x.float()
+        x = x.float() / 255.0
         probs = self.actor(self.hidden(x))
         cat = Categorical(probs)
         if action == None:
@@ -299,19 +313,31 @@ class StorageBuffer():
 
 def make_env(env_id, seed, env_num, record_video, run_name):
     """Creates a single gym environment"""
-    env = gym.make(env_id)
+    
+    # Make environment, and record video for first environment, if requested
+    if record_video and env_num == 0:
+        env = gym.make(env_id, render_mode="rgb_array")
+        env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
+    else:
+        env = gym.make(env_id)
+    
+    # Atari preprocessing wrappers
+    env = NoopResetEnv(env, noop_max=30)
+    env = MaxAndSkipEnv(env, skip=4)
+    env = EpisodicLifeEnv(env)
+    if "FIRE" in env.unwrapped.get_action_meanings():
+        env = FireResetEnv(env)
+    env = ClipRewardEnv(env)
+    env = gym.wrappers.ResizeObservation(env, (84, 84))
+    env = gym.wrappers.GrayScaleObservation(env)
+    env = gym.wrappers.FrameStack(env, 4)
+
+    # Record episode stats wrapper
     env = gym.wrappers.RecordEpisodeStatistics(env)
-    
-    # Record video for first environment, if requested
-    if record_video:
-        if env_num == 0:
-            trigger = lambda t: t % 100 == 0
-            env = gym.wrappers.RecordVideo(env, f"./videos/{run_name}", episode_trigger = trigger)
-    
+
     # Set seed
-    env.seed = seed
-    env.action_space.seed = seed
-    env.observation_space.seed = seed
+    env.action_space.seed(seed)
+    env.observation_space.seed(seed)
     
     return env
 
