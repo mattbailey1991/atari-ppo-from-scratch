@@ -2,6 +2,8 @@
 
 Implementation of the PPO (Proximal Policy Optimization) algorithm from scratch to learn to play Atari games. Follows the tutorial from https://iclr-blog-track.github.io/2022/03/25/ppo-implementation-details/ 🕹️
 
+![Image](https://github.com/user-attachments/assets/10ec8a95-8f7b-4737-bb24-15274250264b)
+
 ## Description
 
 This project provides a clean and understandable implementation of the PPO (Proximal Policy Optimization) algorithm using Python. The goal is to train an agent to play Atari games directly from pixel inputs. 
